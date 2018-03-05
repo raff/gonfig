@@ -1,3 +1,7 @@
+// Copyright (c) 2017 Steven Roose <steven@stevenroose.org>.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package gonfig
 
 import (
@@ -7,24 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseFile_FileNotExist(t *testing.T) {
-	require.Error(t, parseFile(&setup{
+func TestParseFile_FileNotExist_Default(t *testing.T) {
+	require.NoError(t, parseFile(&setup{
 		configFilePath: "/doesntexist.conf",
 	}))
 }
 
-func TestParseFile_InvalidEncoding(t *testing.T) {
-	file, err := ioutil.TempFile("", "gonfig")
-	require.NoError(t, err)
-
-	require.Panics(t, func() {
-		parseFile(&setup{
-			configFilePath: file.Name(),
-			conf: &Conf{
-				FileEncoding: "nonexistent",
-			},
-		})
-	})
+func TestParseFile_FileNotExist_Custom(t *testing.T) {
+	require.Error(t, parseFile(&setup{
+		configFilePath:   "/doesntexist.conf",
+		customConfigFile: true,
+	}))
 }
 
 func TestParseFile_InvalidJSON(t *testing.T) {
@@ -39,7 +36,7 @@ func TestParseFile_InvalidJSON(t *testing.T) {
 	require.Error(t, parseFile(&setup{
 		configFilePath: file.Name(),
 		conf: &Conf{
-			FileEncoding: "json",
+			FileDecoder: DecoderJSON,
 		},
 	}))
 }
@@ -54,7 +51,7 @@ func TestParseFile_InvalidYAML(t *testing.T) {
 	require.Error(t, parseFile(&setup{
 		configFilePath: file.Name(),
 		conf: &Conf{
-			FileEncoding: "yaml",
+			FileDecoder: DecoderYAML,
 		},
 	}))
 }
@@ -69,7 +66,41 @@ func TestParseFile_InvalidTOML(t *testing.T) {
 	require.Error(t, parseFile(&setup{
 		configFilePath: file.Name(),
 		conf: &Conf{
-			FileEncoding: "toml",
+			FileDecoder: DecoderTOML,
+		},
+	}))
+}
+
+func TestParseFile_InvalidAny(t *testing.T) {
+	file, err := ioutil.TempFile("", "gonfig")
+	require.NoError(t, err)
+
+	_, err = file.WriteString("&$_@")
+	require.NoError(t, err)
+
+	require.Error(t, parseFile(&setup{
+		configFilePath: file.Name(),
+		conf: &Conf{
+			FileDecoder: DecoderTryAll,
+		},
+	}))
+}
+
+func TestParseFile_MultiDecoder(t *testing.T) {
+	file, err := ioutil.TempFile("", "gonfig")
+	require.NoError(t, err)
+
+	_, err = file.WriteString("test = \"value\"\n")
+	require.NoError(t, err)
+
+	require.NoError(t, parseFile(&setup{
+		configFilePath: file.Name(),
+		conf: &Conf{
+			FileDecoder: NewMultiFileDecoder([]FileDecoderFn{
+				DecoderJSON,
+				DecoderYAML,
+				DecoderTOML,
+			}),
 		},
 	}))
 }

@@ -1,113 +1,88 @@
+// Copyright (c) 2017 Steven Roose <steven@stevenroose.org>.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package gonfig
 
 import (
 	"fmt"
 	"os"
-	"path"
-	"reflect"
 	"strings"
-
-	"github.com/spf13/pflag"
 )
 
-const (
-	defaultHelpDescription = "print this help menu"
-	defaultHelpMessage     = "Usage of __EXEC__:"
-)
+// flagFromWord interprets if the word could be a cmd like flag (either
+// `--word` or `-w`) and returns the word itself (resp. `word` or `w`).
+// It returns an empty string if the word cannot be a flag.
+func flagFromWord(w string) string {
+	if len(w) > 2 && w[0] == '-' && w[1] == '-' {
+		return w[2:]
+	} else if len(w) == 2 && w[0] == '-' {
+		return w[1:2]
+	} else {
+		return ""
+	}
+}
 
-// createFlagSet builds the flagset for the options in the setup.
-func createFlagSet(s *setup) *pflag.FlagSet {
-	flagSet := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
-	flagSet.SortFlags = false
+// parseFlagsToMap parses the given command line flags into a string.
+func parseFlagsToMap(s *setup, args []string) (map[string]string, error) {
+	args = args[1:]
+	result := map[string]string{}
 
-	for _, opt := range s.allOpts {
-		if opt.isParent {
-			// Parents are skipped, we should only add the children.
+	var i = 0
+	for i < len(args) {
+		arg := args[i]
+
+		if arg == "--help" || arg == "-h" {
+			printHelpAndExit(s)
+		}
+
+		if arg == "--" {
+			// separator that indicates end of flags
+			return result, nil
+		}
+
+		parts := strings.SplitN(arg, "=", 2)
+		key := flagFromWord(parts[0])
+		if key == "" {
+			return nil, fmt.Errorf(
+				"unexpected word while parsing flags: '%s'", arg)
+		}
+
+		addValue := func(key, newValue string) {
+			value, isSet := result[key]
+			if isSet {
+				value = value + "," + newValue
+			} else {
+				value = newValue
+			}
+			result[key] = value
+		}
+
+		if len(parts) == 2 {
+			addValue(key, parts[1])
+			i += 1
 			continue
 		}
 
-		switch opt.value.Type().Kind() {
-		case reflect.Bool:
-			var def bool
-			if opt.defaul == "true" {
-				def = true
-			}
-			flagSet.BoolP(opt.fullID(), opt.short, def, opt.desc)
-
-		case reflect.Slice:
-			if opt.value.Type().Elem().Kind() == reflect.Uint8 {
-				// Special case for byte slices.
-				flagSet.StringP(opt.fullID(), opt.short, opt.defaul, opt.desc)
-				break
-			}
-			defSlice, err := readAsCSV(opt.defaul)
-			if err != nil {
-				panic(fmt.Sprintf(
-					"error parsing default value '%s' for slice variable %s: %s",
-					opt.defaul, opt.fullID(), err))
-			}
-			flagSet.StringSliceP(opt.fullID(), opt.short, defSlice, opt.desc)
-
-		default:
-			// We use strings for everything else since there is no visual
-			// difference in the help output and we need logic for parsing
-			// values from into the target type anyhow.
-			flagSet.StringP(opt.fullID(), opt.short, opt.defaul, opt.desc)
-		}
-	}
-
-	if !s.conf.HelpDisable {
-		desc := s.conf.HelpDescription
-		if desc == "" {
-			desc = defaultHelpDescription
+		if len(args) <= i+1 || flagFromWord(args[i+1]) != "" {
+			addValue(key, "true")
+			i += 1
+			continue
 		}
 
-		flagSet.BoolP("help", "h", false, desc)
+		nextWord := args[i+1]
+		addValue(key, nextWord)
+		i += 2
 	}
 
-	return flagSet
-}
-
-// printHelpAndExit prints the help message and exits the program.
-func printHelpAndExit(s *setup) {
-	message := s.conf.HelpMessage
-	if message == "" {
-		exec := path.Base(os.Args[0])
-		message = strings.Replace(defaultHelpMessage, "__EXEC__", exec, 1)
-	}
-
-	fmt.Println(message)
-	fmt.Println(s.flagSet.FlagUsages())
-	os.Exit(2)
-}
-
-// initFlags makes sure that the flagset should only be initialized once.
-// This method initializes the flagset and stores it; when called a second
-// time, it just returns nil.
-func initFlags(s *setup) error {
-	// Check if already initialized.
-	if s.flagSet != nil {
-		return nil
-	}
-
-	s.flagSet = createFlagSet(s)
-
-	if err := s.flagSet.Parse(os.Args[1:]); err != nil {
-		return err
-	}
-
-	// If help is provided, immediately print usage and stop.
-	if s.flagSet.Lookup("help").Changed {
-		printHelpAndExit(s)
-	}
-
-	return nil
+	return result, nil
 }
 
 // parseFlags parses the command line flags for all config options
 // and writes the values that have been found in place.
 func parseFlags(s *setup) error {
-	if err := initFlags(s); err != nil {
+	flagsMap, err := parseFlagsToMap(s, os.Args)
+	if err != nil {
 		return err
 	}
 
@@ -117,21 +92,49 @@ func parseFlags(s *setup) error {
 			continue
 		}
 
-		// Prevent storing empty (unset) values.
-		if !s.flagSet.Changed(opt.fullID()) {
+		if opt.isMap {
+			// An exception for maps, we need to look for all prefixed flags.
+			for flag, value := range flagsMap {
+				if strings.HasPrefix(flag, opt.fullID()+".") {
+					key := strings.TrimPrefix(flag, opt.fullID()+".")
+					if err := setSimpleMapValue(opt.value, key, value); err != nil {
+						return fmt.Errorf(
+							"error parsing map value '%v' for config var %v: %v",
+							value, opt.fullID(), err)
+					}
+					delete(flagsMap, flag)
+				}
+			}
 			continue
 		}
 
-		flag := s.flagSet.Lookup(opt.fullID())
-		stringValue := flag.Value.String()
-
-		if opt.isSlice {
-			// Trim the square brackets of the string.
-			stringValue = stringValue[1 : len(stringValue)-1]
+		stringValue, fullSet := flagsMap[opt.fullID()]
+		if fullSet {
+			delete(flagsMap, opt.fullID())
+		}
+		shortValue, shortSet := flagsMap[opt.short]
+		if shortSet {
+			delete(flagsMap, opt.short)
+		}
+		if !fullSet && !shortSet {
+			continue
+		} else if fullSet && shortSet {
+			return fmt.Errorf("flag is set with both short and full form: %v",
+				opt.fullID())
+		} else if shortSet {
+			stringValue = shortValue
 		}
 
 		if err := opt.setValueByString(stringValue); err != nil {
-			return fmt.Errorf("error parsing flag %s: %s", opt.fullID(), err)
+			return fmt.Errorf("error parsing flag value for %s: %s",
+				opt.fullID(), err)
+		}
+	}
+
+	if !s.conf.FlagIgnoreUnknown {
+		// error if there is still something left
+		for flag := range flagsMap {
+			return fmt.Errorf("unknown flag: %s", flag)
 		}
 	}
 
@@ -140,9 +143,10 @@ func parseFlags(s *setup) error {
 
 // lookupConfigFileFlag looks for the config file in the command line flags.
 func lookupConfigFileFlag(s *setup, configOpt *option) (string, error) {
-	if err := initFlags(s); err != nil {
-		return "", err
+	flagsMap, err := parseFlagsToMap(s, os.Args)
+	if err != nil {
+		return "", nil
 	}
 
-	return s.flagSet.Lookup(configOpt.id).Value.String(), nil
+	return flagsMap[configOpt.fullID()], nil
 }

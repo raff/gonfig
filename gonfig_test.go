@@ -1,3 +1,7 @@
+// Copyright (c) 2017 Steven Roose <steven@stevenroose.org>.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package gonfig
 
 import (
@@ -71,6 +75,12 @@ func (h *HexEncoded) UnmarshalText(t []byte) error {
 	return nil
 }
 
+type NestedTestStruct struct {
+	StringVar string `default:"defstring2" short:"n" desc:"descstring2"`
+	IntVar    int    `id:"int"`
+	BoolVar1  bool   `id:"boolvar"`
+}
+
 type TestStruct struct {
 	StringVar    string        `default:"defstring" short:"s" desc:"descstring"`
 	UintVar      uint          `default:"42"`
@@ -99,17 +109,14 @@ type TestStruct struct {
 	Strings4 []string `default:"string1,string2"`
 	Ints1    []int    `id:"ints" default:"42,43"`
 	Ints2    []int    `default:"42,43"`
+	Uints1   []uint   `default:"42,44"`
+
+	MapVar map[string]interface{}
 
 	Nested NestedTestStruct `id:"nestedid"`
 
 	Marshaled *MarshaledUpper `id:"upper1"`
 	HexData   *HexEncoded     `id:"hex"`
-}
-
-type NestedTestStruct struct {
-	StringVar string `default:"defstring2" short:"n" desc:"descstring2"`
-	IntVar    int    `id:"int"`
-	BoolVar1  bool   `id:"boolvar"`
 }
 
 func setOS(args []string, env map[string]string) {
@@ -153,6 +160,8 @@ func TestGonfig(t *testing.T) {
 				"--hex", "010203",
 				"--bytes1", "AQID",
 				"-d", "5m",
+				"--uints1", "40", "--uints1", "40",
+				"--mapvar.mapkeyflag", "mapvalueflag",
 			},
 			env: map[string]string{
 				"INT8VAR":               "42",
@@ -162,6 +171,7 @@ func TestGonfig(t *testing.T) {
 				"PREF_NESTEDID_BOOLVAR": "true",
 				"PREF_STRINGS2":         "one,two,three",
 				"PREF_INTS":             "1,2,3",
+				"PREF_MAPVAR_MAPKEYENV": "mapvalueenv",
 			},
 			conf: Conf{
 				FileDisable: true,
@@ -200,6 +210,9 @@ func TestGonfig(t *testing.T) {
 				assert.EqualValues(t, []int{42, 43}, c.Ints2)
 				assert.EqualValues(t, "test", c.Marshaled.String())
 				assert.EqualValues(t, "010203", c.HexData.String())
+				assert.EqualValues(t, []uint{40, 40}, c.Uints1)
+				assert.EqualValues(t, "mapvalueflag", c.MapVar["mapkeyflag"])
+				assert.EqualValues(t, "mapvalueenv", c.MapVar["mapkeyenv"])
 			},
 		},
 		{
@@ -224,10 +237,13 @@ func TestGonfig(t *testing.T) {
 					"int": 42
 				},
 				"upper1": "TEST",
-				"hex": "010203"
+				"hex": "010203",
+				"mapvar": {
+					"key1": "value1"
+				}
 			}`,
 			conf: Conf{
-				FileEncoding: "json",
+				FileDecoder: DecoderJSON,
 			},
 			config: &TestStruct{},
 			validate: func(t *testing.T, config interface{}) {
@@ -255,6 +271,7 @@ func TestGonfig(t *testing.T) {
 				assert.EqualValues(t, []int{1, 2, 3}, c.Ints1)
 				assert.EqualValues(t, "test", c.Marshaled.String())
 				assert.EqualValues(t, "010203", c.HexData.String())
+				assert.EqualValues(t, "value1", c.MapVar["key1"])
 			},
 		},
 		{
@@ -280,9 +297,11 @@ func TestGonfig(t *testing.T) {
 				"  stringvar: otherstringvalue\n" +
 				"  int: 42\n" +
 				"upper1: TEST\n" +
-				"hex: \"010203\"\n",
+				"hex: \"010203\"\n" +
+				"mapvar:\n" +
+				"  key1: value1\n",
 			conf: Conf{
-				FileEncoding: "yaml",
+				FileDecoder: DecoderYAML,
 			},
 			config: &TestStruct{},
 			validate: func(t *testing.T, config interface{}) {
@@ -310,6 +329,7 @@ func TestGonfig(t *testing.T) {
 				assert.EqualValues(t, []int{1, 2, 3}, c.Ints1)
 				assert.EqualValues(t, "test", c.Marshaled.String())
 				assert.EqualValues(t, "010203", c.HexData.String())
+				assert.EqualValues(t, "value1", c.MapVar["key1"])
 			},
 		},
 		{
@@ -332,9 +352,11 @@ func TestGonfig(t *testing.T) {
 				"hex = \"010203\"\n" +
 				"[nestedid]\n" +
 				"stringvar = \"otherstringvalue\"\n" +
-				"int = 42\n",
+				"int = 42\n" +
+				"[mapvar]\n" +
+				"key1 = \"value1\"\n",
 			conf: Conf{
-				FileEncoding: "toml",
+				FileDecoder: DecoderTOML,
 			},
 			config: &TestStruct{},
 			validate: func(t *testing.T, config interface{}) {
@@ -362,6 +384,7 @@ func TestGonfig(t *testing.T) {
 				assert.EqualValues(t, []int{1, 2, 3}, c.Ints1)
 				assert.EqualValues(t, "test", c.Marshaled.String())
 				assert.EqualValues(t, "010203", c.HexData.String())
+				assert.EqualValues(t, "value1", c.MapVar["key1"])
 			},
 		},
 		{
@@ -372,11 +395,20 @@ func TestGonfig(t *testing.T) {
 			shouldPanic: true,
 		},
 		{
-			desc: "map not supported",
+			desc: "struct with unsupported type not supported",
 			config: &struct {
-				Map map[string]string
+				Nested struct {
+					N NotSupported
+				}
 			}{},
 			shouldPanic: true,
+		},
+		{
+			desc: "ignore unexported vars",
+			config: &struct {
+				var1 NotSupported
+			}{},
+			shouldPanic: false,
 		},
 		{
 			desc: "invalid default value bool",
@@ -502,6 +534,15 @@ func TestGonfig(t *testing.T) {
 			shouldError: true,
 		},
 		{
+			desc: "value passed with both short and full form",
+			config: &struct {
+				Var string `id:"var" short:"v"`
+			}{},
+			conf:        Conf{EnvDisable: true, FileDisable: true},
+			args:        []string{"--var", "strng", "-v", "also"},
+			shouldError: true,
+		},
+		{
 			desc: "value passed into nested ID",
 			config: &struct {
 				Var struct {
@@ -622,10 +663,56 @@ func TestGonfig(t *testing.T) {
 				assert.EqualValues(t, testTime, c.Tm)
 			},
 		},
+		{
+			desc: "find file encoding",
+			config: &struct {
+				V int
+			}{},
+			conf:        Conf{EnvDisable: true, FlagDisable: true},
+			fileContent: `{"v": 5}`,
+			validate: func(t *testing.T, config interface{}) {
+				c, success := config.(*struct {
+					V int
+				})
+				require.True(t, success)
+
+				assert.Equal(t, 5, c.V)
+			},
+		},
+		{
+			desc: "wrong CSV encoding",
+			config: &struct {
+				V []int
+			}{},
+			conf: Conf{FlagDisable: true, FileDisable: true},
+			env: map[string]string{
+				"V": "5,",
+			},
+			shouldError: true,
+		},
+		{
+			desc: "don't overwrite non-zero values with defaults",
+			config: &struct {
+				V int `default:"42"`
+			}{
+				V: 52,
+			},
+			conf: Conf{FlagDisable: true, FileDisable: true, EnvDisable: true},
+			validate: func(t *testing.T, config interface{}) {
+				c, success := config.(*struct {
+					V int `default:"42"`
+				})
+				require.True(t, success)
+
+				assert.Equal(t, 52, c.V)
+			},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
+			t.Logf("args: %v", tc.args)
+			t.Logf("env: %v", tc.env)
 			setOS(tc.args, tc.env)
 
 			// Write config file.
@@ -640,7 +727,7 @@ func TestGonfig(t *testing.T) {
 			}
 
 			conf := tc.conf
-			conf.FileDirectory, conf.FileDefaultFilename = path.Split(filename)
+			conf.FileDefaultFilename = filename
 
 			if tc.shouldPanic {
 				require.Panics(t, func() { Load(tc.config, conf) })
@@ -648,7 +735,9 @@ func TestGonfig(t *testing.T) {
 				require.Error(t, Load(tc.config, conf))
 			} else {
 				require.NoError(t, Load(tc.config, conf))
-				tc.validate(t, tc.config)
+				if tc.validate != nil {
+					tc.validate(t, tc.config)
+				}
 			}
 		})
 	}
@@ -664,24 +753,9 @@ func TestFindConfigFile_NoVariable(t *testing.T) {
 		},
 	}
 
-	filename, err := findConfigFile(s)
+	filename, err := findCustomConfigFile(s)
 	require.NoError(t, err)
-	assert.Equal(t, "/default.conf", filename)
-}
-
-func TestFindConfigFile_WithDirectory(t *testing.T) {
-	setOS(nil, nil)
-	s := &setup{
-		conf: &Conf{
-			FlagDisable:         true,
-			EnvDisable:          true,
-			FileDefaultFilename: "default.conf",
-		},
-	}
-
-	filename, err := findConfigFile(s)
-	require.NoError(t, err)
-	assert.Equal(t, "default.conf", filename)
+	assert.Empty(t, filename)
 }
 
 func TestFindConfigFile_WithFlag(t *testing.T) {
@@ -698,9 +772,11 @@ func TestFindConfigFile_WithFlag(t *testing.T) {
 		ConfigFile string
 	}{}))
 
-	filename, err := findConfigFile(s)
+	filename, err := findCustomConfigFile(s)
 	require.NoError(t, err)
-	assert.Equal(t, "fromflag.conf", filename)
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, path.Join(wd, "fromflag.conf"), filename)
 }
 
 func TestFindConfigFile_WithEnv(t *testing.T) {
@@ -717,9 +793,11 @@ func TestFindConfigFile_WithEnv(t *testing.T) {
 		ConfigFile string
 	}{}))
 
-	filename, err := findConfigFile(s)
+	filename, err := findCustomConfigFile(s)
 	require.NoError(t, err)
-	assert.Equal(t, "fromenv.conf", filename)
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, path.Join(wd, "fromenv.conf"), filename)
 }
 
 func TestFindConfigFile_VariableNotSet(t *testing.T) {
@@ -736,9 +814,9 @@ func TestFindConfigFile_VariableNotSet(t *testing.T) {
 		ConfigFile string
 	}{}))
 
-	filename, err := findConfigFile(s)
+	filename, err := findCustomConfigFile(s)
 	require.NoError(t, err)
-	assert.Equal(t, "default.conf", filename)
+	assert.Empty(t, filename)
 }
 
 func TestFindConfigFile_VariableNotProvided(t *testing.T) {
@@ -755,5 +833,72 @@ func TestFindConfigFile_VariableNotProvided(t *testing.T) {
 		ConfigFileX string
 	}{}))
 
-	assert.Panics(t, func() { findConfigFile(s) })
+	assert.Panics(t, func() { findCustomConfigFile(s) })
+}
+
+func TestLoadRawFile(t *testing.T) {
+	fileContent := []byte(`{
+		"stringvar": "stringvalue"
+	}`)
+
+	config := TestStruct{}
+	require.NoError(t, LoadRawFile(&config, fileContent, Conf{
+		FileDecoder: DecoderJSON,
+	}))
+
+	assert.EqualValues(t, "stringvalue", config.StringVar)
+}
+
+func TestLoadRawFile_NoDecoder(t *testing.T) {
+	fileContent := []byte(`{
+		"stringvar": "stringvalue"
+	}`)
+
+	config := TestStruct{}
+	require.NoError(t, LoadRawFile(&config, fileContent, Conf{}))
+
+	assert.EqualValues(t, "stringvalue", config.StringVar)
+}
+
+func TestLoadWithRawFile(t *testing.T) {
+	fileContent := []byte(`{
+		"stringvar": "stringvalue",
+		"uintvar": 43
+	}`)
+
+	os.Args = []string{os.Args[0], "--uintvar", "44"}
+
+	config := TestStruct{}
+	require.NoError(t, LoadWithRawFile(&config, fileContent, Conf{
+		FileDecoder: DecoderJSON,
+	}))
+
+	assert.EqualValues(t, "stringvalue", config.StringVar)
+	assert.EqualValues(t, 44, config.UintVar)
+}
+
+func TestLoadMap(t *testing.T) {
+	varmap := map[string]interface{}{
+		"stringvar": "stringvalue",
+	}
+
+	config := TestStruct{}
+	require.NoError(t, LoadMap(&config, varmap, Conf{}))
+
+	assert.EqualValues(t, "stringvalue", config.StringVar)
+}
+
+func TestLoadWithMap(t *testing.T) {
+	varmap := map[string]interface{}{
+		"stringvar": "stringvalue",
+		"uintvar":   43,
+	}
+
+	os.Args = []string{os.Args[0], "--uintvar", "44"}
+
+	config := TestStruct{}
+	require.NoError(t, LoadWithMap(&config, varmap, Conf{}))
+
+	assert.EqualValues(t, "stringvalue", config.StringVar)
+	assert.EqualValues(t, 44, config.UintVar)
 }

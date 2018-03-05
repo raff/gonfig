@@ -1,3 +1,7 @@
+// Copyright (c) 2017 Steven Roose <steven@stevenroose.org>.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package gonfig
 
 import (
@@ -28,10 +32,12 @@ type option struct {
 	value   reflect.Value
 	subOpts []*option
 
-	fullIDParts []string // ID of the option with all the IDs of its parents
-	defaultSet  bool     // the default value was set
-	isParent    bool     // is nested and has thus is not itself represented
-	isSlice     bool     // is a slice type, except for []byte
+	fullIDParts  []string      // full ID of the option with all its parents
+	defaultSet   bool          // the default value was set in the structure
+	defaultValue reflect.Value // the default value
+	isParent     bool          // is nested and has children
+	isSlice      bool          // is a slice type, except for []byte
+	isMap        bool          // is a map type
 
 	// Struct metadata specified by user.
 	id     string // the identifier
@@ -80,15 +86,21 @@ func createOptionsFromStruct(v reflect.Value, parent *option) ([]*option, []*opt
 
 	for f := 0; f < v.NumField(); f++ {
 		field := v.Type().Field(f)
-		opt := optionFromField(field, parent)
+		value := v.Field(f)
 
-		if !isSupportedType(field.Type) {
-			return nil, nil, fmt.Errorf(
-				"type of field %s (%s) is not supported",
-				field.Name, field.Type)
+		if !value.CanSet() {
+			// Unexported field, ignoring.
+			continue
 		}
 
-		opt.value = v.Field(f)
+		opt := optionFromField(field, parent)
+		opt.value = value
+
+		if err := isSupportedType(field.Type); err != nil {
+			return nil, nil, fmt.Errorf(
+				"type of field %v (%v) is not supported: %v",
+				field.Name, field.Type, err)
+		}
 
 		var (
 			t = field.Type
@@ -99,6 +111,9 @@ func createOptionsFromStruct(v reflect.Value, parent *option) ([]*option, []*opt
 		if k == reflect.Ptr && opt.value.IsNil() {
 			opt.value.Set(reflect.New(t.Elem()))
 		}
+		if k == reflect.Map && opt.value.IsNil() {
+			opt.value.Set(reflect.MakeMap(t))
+		}
 
 		var err error
 		var allSubOpts []*option
@@ -107,6 +122,8 @@ func createOptionsFromStruct(v reflect.Value, parent *option) ([]*option, []*opt
 		} else if k == reflect.Slice && t != typeOfByteSlice {
 			// All slices except []byte.
 			opt.isSlice = true
+		} else if k == reflect.Map {
+			opt.isMap = true
 		} else if k == reflect.Struct {
 			opt.isParent = true
 			opt.subOpts, allSubOpts, err = createOptionsFromStruct(opt.value, opt)

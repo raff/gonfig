@@ -1,15 +1,15 @@
+// Copyright (c) 2017 Steven Roose <steven@stevenroose.org>.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package gonfig
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"reflect"
-
-	"github.com/BurntSushi/toml"
-
-	yaml "gopkg.in/yaml.v2"
 )
 
 // parseMapOpts parses options from a map[string]interface{}.  This is used
@@ -41,59 +41,57 @@ func parseMapOpts(j map[string]interface{}, opts []*option) error {
 	return nil
 }
 
-// openConfigFile trues to open the config file at path.  If it fails
-// it returns a nice error.
-func openConfigFile(path string) ([]byte, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config file at %s does not exist", path)
+// parseFileContent parses the config file given its content.
+func parseFileContent(s *setup, content []byte) error {
+	decoder := s.conf.FileDecoder
+	if decoder == nil {
+		// Look for the config file extension to determine the encoding.
+		switch path.Ext(s.configFilePath) {
+		case "json":
+			decoder = DecoderJSON
+		case "toml":
+			decoder = DecoderTOML
+		case "yaml", "yml":
+			decoder = DecoderYAML
+		default:
+			decoder = DecoderTryAll
+		}
 	}
 
-	content, err := ioutil.ReadFile(path)
+	m, err := decoder(content)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"error reading config file at %s: %s", path, err)
+		return fmt.Errorf("failed to parse file at %s: %s",
+			s.configFilePath, err)
 	}
 
-	return content, nil
+	// Parse the map for the options.
+	if err := parseMapOpts(m, s.opts); err != nil {
+		return fmt.Errorf("error loading config vars from config file: %s", err)
+	}
+
+	return nil
 }
 
 // parseFile parses the config file for all config options by delegating
 // the call to the method specific to the config file encoding specified.
 func parseFile(s *setup) error {
-	content, err := openConfigFile(s.configFilePath)
+	if _, err := os.Stat(s.configFilePath); os.IsNotExist(err) {
+		// Config file is not present.  We ignore this when we are using
+		// the default config file, but we escalate if the user provided
+		// the config file explicitely.
+		if s.customConfigFile {
+			return fmt.Errorf(
+				"config file at %s does not exist", s.configFilePath)
+		} else {
+			return nil
+		}
+	}
+
+	content, err := ioutil.ReadFile(s.configFilePath)
 	if err != nil {
-		return err
+		return fmt.Errorf(
+			"error reading config file at %s: %s", s.configFilePath, err)
 	}
 
-	// Decode to a map using the given encoding.
-	var m map[string]interface{}
-	switch s.conf.FileEncoding {
-
-	case "json":
-		if err := json.Unmarshal(content, &m); err != nil {
-			return fmt.Errorf("error parsing JSON config file: %s", err)
-		}
-
-	case "toml":
-		if err := toml.Unmarshal(content, &m); err != nil {
-			return fmt.Errorf("error parsing TOML config file: %s", err)
-		}
-
-	case "yaml":
-		if err := yaml.Unmarshal(content, &m); err != nil {
-			return fmt.Errorf("error parsing YAML config file: %s", err)
-		}
-		// Cast map[interface{}]interface{} to map[string]interface{}.
-		m = cleanUpYAML(m).(map[string]interface{})
-
-	default:
-		panic(fmt.Errorf("wrong config file encoding: %s", s.conf.FileEncoding))
-	}
-
-	// Parse the map for the options.
-	if err := parseMapOpts(m, s.opts); err != nil {
-		return err
-	}
-
-	return nil
+	return parseFileContent(s, content)
 }
